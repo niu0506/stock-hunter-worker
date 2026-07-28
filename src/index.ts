@@ -37,44 +37,41 @@ function matches(s: StockData): boolean {
   return true;
 }
 
-async function fetchStocksFromSina(): Promise<StockData[]> {
-  const url =
-    'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/' +
-    'Market_Center.getHQNodeData?page=1&num=10000&sort=code&asc=1&node=hs_a&_s_r_a=page';
-
-  const resp = await fetch(url, {
-    headers: {
-      Referer: 'https://finance.sina.com.cn/',
-      'User-Agent': 'Mozilla/5.0',
-    },
-  });
-
-  if (!resp.ok) throw new Error(`Sina API error: ${resp.status}`);
-  const data: any[] = await resp.json();
-  if (!Array.isArray(data)) throw new Error('Sina API response is not an array');
-
+async function fetchStocks(): Promise<StockData[]> {
   const results: StockData[] = [];
+  const seen = new Set<string>();
+  const baseUrl =
+    'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/' +
+    'Market_Center.getHQNodeData?sort=code&asc=1&node=hs_a&_s_r_a=page';
 
-  for (const item of data) {
-    const code: string = item.code;
-    const name: string = item.name;
-    const trade = parseFloat(item.trade);
-
-    if (!code || !name || isNaN(trade)) continue;
-    if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
-
-    results.push({
-      code,
-      name,
-      price: trade,
-      changePct: parseFloat(item.changepercent) || 0,
-      turnoverRate: parseFloat(item.turnoverratio) || 0,
-      peRatio: parseFloat(item.per) || 0,
-      pbRatio: parseFloat(item.pb) || 0,
-      marketCap: (parseFloat(item.mktcap) || 0) / 10000,
+  for (let page = 1; page <= 45; page++) {
+    const resp = await fetch(`${baseUrl}&page=${page}&num=100`, {
+      headers: { Referer: 'https://finance.sina.com.cn/', 'User-Agent': 'Mozilla/5.0' },
     });
-  }
+    if (!resp.ok) throw new Error(`Sina API error: ${resp.status}`);
+    const data: any[] = await resp.json();
+    if (!Array.isArray(data) || data.length === 0) break;
 
+    for (const item of data) {
+      const code: string = item.code;
+      const name: string = item.name;
+      const trade = parseFloat(item.trade);
+      if (!code || !name || isNaN(trade)) continue;
+      if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
+      if (seen.has(code)) continue;
+      seen.add(code);
+
+      results.push({
+        code, name, price: trade,
+        changePct: parseFloat(item.changepercent) || 0,
+        turnoverRate: parseFloat(item.turnoverratio) || 0,
+        peRatio: parseFloat(item.per) || 0,
+        pbRatio: parseFloat(item.pb) || 0,
+        marketCap: (parseFloat(item.mktcap) || 0) / 10000,
+      });
+    }
+    if (data.length < 100) break;
+  }
   return results;
 }
 
@@ -140,13 +137,13 @@ async function saveToKV(env: Env, stocks: StockData[]): Promise<void> {
 async function handleScreening(env: Env): Promise<string> {
   console.log('开始获取A股数据');
 
-  const allData = await fetchStocksFromSina();
+  const allData = await fetchStocks();
   console.log(`获取到 ${allData.length} 条股票数据`);
 
   if (allData.length === 0) return '未获取到股票数据';
 
   const selected = allData.filter(matches);
-  selected.sort((a, b) => b.changePct - a.changePct);
+  selected.sort((a: StockData, b: StockData) => b.changePct - a.changePct);
 
   console.log(`筛选出 ${selected.length} 只符合条件的股票`);
 
