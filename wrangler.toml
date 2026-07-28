@@ -1,0 +1,10 @@
+name = "stock-hunter"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+
+[triggers]
+crons = ["0 7 * * 1-5"]
+
+[[kv_namespaces]]
+binding = "STOCK_HUNTER"
+id = "8aea6df46ef542bb90078ae92703be19"
