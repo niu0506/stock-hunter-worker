@@ -1,5 +1,27 @@
 import type { ScheduledEvent, ExecutionContext } from '@cloudflare/workers-types';
 
+const HOLIDAYS = new Set<string>([
+  '20250101',
+  '20250128','20250129','20250130','20250131',
+  '20250201','20250202','20250203','20250204',
+  '20250404','20250405','20250406',
+  '20250501','20250502','20250503','20250504','20250505',
+  '20250531','20250601','20250602',
+  '20251001','20251002','20251003','20251004','20251005','20251006','20251007','20251008',
+  '20260101','20260102','20260103',
+  '20260214','20260215','20260216','20260217','20260218','20260219','20260220',
+  '20260404','20260405','20260406',
+  '20260501','20260502','20260503','20260504','20260505',
+  '20260619','20260620','20260621',
+  '20260927','20260928','20260929',
+  '20261001','20261002','20261003','20261004','20261005','20261006','20261007',
+]);
+
+const MAKEUP_WORKDAYS = new Set<string>([
+  '20250126','20250208','20250427','20250510','20250928','20251011',
+  '20260110','20260221','20260222','20260509','20261010','20261011',
+]);
+
 export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
@@ -25,7 +47,11 @@ interface ScreeningResult {
 
 function isTradingDay(): boolean {
   const d = new Date();
-  return d.getDay() >= 1 && d.getDay() <= 5;
+  const dateStr = d.toISOString().slice(0, 10).replace(/-/g, '');
+  const day = d.getDay();
+  if (MAKEUP_WORKDAYS.has(dateStr)) return true;
+  if (HOLIDAYS.has(dateStr)) return false;
+  return day >= 1 && day <= 5;
 }
 
 function matches(s: StockData): boolean {
@@ -247,6 +273,7 @@ function renderMain(result){
     <h2>\${date.slice(0,4)}-\${date.slice(4,6)}-\${date.slice(6,8)} 筛选结果</h2>
     <div style="font-size:12px;color:#8899b4;margin-bottom:16px">更新时间: \${timeStr}</div>
     
+    <div class="chart-container"><h3>📊 历史筛选数量趋势</h3><div style="height:240px"><canvas id="stockChart"></canvas></div></div>
     <div class="table-container"><h3>详细列表 (\${stocks.length} 只)</h3>\${renderTable(stocks)}</div>
   \`;
 }
@@ -259,6 +286,22 @@ function renderHistory(dates){
   }).join('');
 }
 
+let chartInstance = null;
+let historyData = [];
+
+function initChart(){
+  if(chartInstance){chartInstance.destroy();chartInstance=null}
+  const canvas=document.getElementById('stockChart');
+  if(!canvas||historyData.length<2)return;
+  const labels=historyData.map(h=>h.date.slice(0,4)+'-'+h.date.slice(4,6)+'-'+h.date.slice(6,8)).reverse();
+  const counts=historyData.map(h=>h.count).reverse();
+  chartInstance=new Chart(canvas,{
+    type:'bar',
+    data:{labels,datasets:[{label:'筛选股票数量',data:counts,backgroundColor:'rgba(74,124,255,0.6)',borderColor:'#4a7cff',borderWidth:1,borderRadius:4}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},scales:{y:{beginAtZero:true,ticks:{stepSize:1,precision:0}},x:{grid:{display:false},ticks:{maxRotation:45}}}}
+  });
+}
+
 async function loadDate(date){
   const main = document.getElementById('mainContent');
   main.innerHTML = '<div class="loading"><div class="spinner"></div><p>加载中...</p></div>';
@@ -266,7 +309,9 @@ async function loadDate(date){
     const result = await fetchJSON(\`/api/history/\${date}\`);
     main.innerHTML = renderMain(result);
     const history = await fetchJSON('/api/history');
+    historyData = history||[];
     renderHistory(history);
+    initChart();
   } catch(e){
     main.innerHTML = \`<div class="empty-state"><div class="big">⚠️</div><p>加载失败: \${e.message}</p></div>\`;
   }
@@ -279,12 +324,14 @@ async function init(){
       fetchJSON('/api/latest'),
       fetchJSON('/api/history')
     ]);
+    historyData = history||[];
     if(latest && latest.stocks){
       main.innerHTML = renderMain(latest);
     } else {
       main.innerHTML = \`<div class="empty-state"><div class="big">📭</div><p>暂无筛选结果</p></div>\`;
     }
     renderHistory(history||[]);
+    initChart();
   } catch(e){
     main.innerHTML = \`<div class="empty-state"><div class="big">⚠️</div><p>加载失败: \${e.message}</p></div>\`;
   }
