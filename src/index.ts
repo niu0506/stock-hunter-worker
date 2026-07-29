@@ -226,52 +226,14 @@ tr:hover td{background:#f8f9fc}
 const API_BASE = '';
 async function fetchJSON(path){const r=await fetch(API_BASE+path);if(!r.ok)throw new Error(await r.text());return r.json()}
 
-let chartInstance = null;
 let currentDate = null;
-
-function renderStats(stocks){
-  const avgChange = stocks.reduce((s, i)=>s+i.changePct,0)/stocks.length||0;
-  const totalCap = stocks.reduce((s,i)=>s+i.marketCap,0);
-  const maxChange = Math.max(...stocks.map(i=>i.changePct));
-  const avgTurnover = stocks.reduce((s,i)=>s+i.turnoverRate,0)/stocks.length||0;
-  return \`
-    <div class="stats">
-      <div class="stat-card"><div class="label">股票数量</div><div class="value">\${stocks.length}</div></div>
-      <div class="stat-card"><div class="label">平均涨幅</div><div class="value \${avgChange>=0?'green':'red'}">\${avgChange.toFixed(2)}%</div></div>
-      <div class="stat-card"><div class="label">最高涨幅</div><div class="value green">\${maxChange.toFixed(2)}%</div></div>
-      <div class="stat-card"><div class="label">总市值(亿)</div><div class="value">\${totalCap.toFixed(0)}</div></div>
-      <div class="stat-card"><div class="label">平均换手率</div><div class="value">\${avgTurnover.toFixed(2)}%</div></div>
-    </div>\`;
-}
-
-function renderChart(stocks, containerId){
-  const ctx = document.getElementById(containerId);
-  if(!ctx) return;
-  if(chartInstance) chartInstance.destroy();
-  const labels = stocks.map(s=>s.code);
-  chartInstance = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [
-        {label:'涨跌幅(%)',data:stocks.map(s=>s.changePct),backgroundColor:stocks.map(s=>s.changePct>=0?'rgba(255,23,68,.7)':'rgba(0,200,83,.7)'),borderRadius:3},
-        {label:'换手率(%)',data:stocks.map(s=>s.turnoverRate),backgroundColor:'rgba(74,124,255,.6)',borderRadius:3}
-      ]
-    },
-    options: {
-      responsive:true,
-      plugins:{legend:{position:'top',labels:{boxWidth:12,font:{size:12}}}},
-      scales:{y:{beginAtZero:true,grid:{color:'#f0f2f5'}},x:{grid:{display:false}}}
-    }
-  });
-}
 
 function renderTable(stocks){
   if(stocks.length===0) return '<div class="empty-state"><div class="big">📭</div><p>没有符合条件的股票</p></div>';
-  let html = '<table><thead><tr><th>代码</th><th>名称</th><th>最新价</th><th>涨跌幅</th><th>换手率</th><th>总市值(亿)</th><th>市盈率</th><th>市净率</th></tr></thead><tbody>';
+  let html = '<table><thead><tr><th>代码</th><th>名称</th><th>最新价</th><th>涨跌幅</th><th>换手率</th><th>市盈率</th><th>市净率</th></tr></thead><tbody>';
   for(const s of stocks){
     const cls = s.changePct>=0?'up':'down';
-    html += \`<tr><td class="code">\${s.code}</td><td>\${s.name}</td><td>\${s.price.toFixed(2)}</td><td class="\${cls}">\${s.changePct>=0?'+':''}\${s.changePct.toFixed(2)}%</td><td>\${s.turnoverRate.toFixed(2)}%</td><td>\${s.marketCap.toFixed(2)}</td><td>\${s.peRatio.toFixed(2)}</td><td>\${s.pbRatio.toFixed(2)}</td></tr>\`;
+    html += `<tr><td class="code">${s.code}</td><td>${s.name}</td><td>${s.price.toFixed(2)}</td><td class="${cls}">${s.changePct>=0?'+':''}${s.changePct.toFixed(2)}%</td><td>${s.turnoverRate.toFixed(2)}%</td><td>${s.peRatio.toFixed(2)}</td><td>${s.pbRatio.toFixed(2)}</td></tr>`;
   }
   html += '</tbody></table>';
   return html;
@@ -284,8 +246,7 @@ function renderMain(result){
   return \`
     <h2>\${date.slice(0,4)}-\${date.slice(4,6)}-\${date.slice(6,8)} 筛选结果</h2>
     <div style="font-size:12px;color:#8899b4;margin-bottom:16px">更新时间: \${timeStr}</div>
-    \${renderStats(stocks)}
-    <div class="chart-container"><h3>涨跌幅 / 换手率</h3><canvas id="stockChart"></canvas></div>
+    
     <div class="table-container"><h3>详细列表 (\${stocks.length} 只)</h3>\${renderTable(stocks)}</div>
   \`;
 }
@@ -304,7 +265,6 @@ async function loadDate(date){
   try {
     const result = await fetchJSON(\`/api/history/\${date}\`);
     main.innerHTML = renderMain(result);
-    renderChart(result.stocks, 'stockChart');
     const history = await fetchJSON('/api/history');
     renderHistory(history);
   } catch(e){
@@ -321,7 +281,6 @@ async function init(){
     ]);
     if(latest && latest.stocks){
       main.innerHTML = renderMain(latest);
-      renderChart(latest.stocks, 'stockChart');
     } else {
       main.innerHTML = \`<div class="empty-state"><div class="big">📭</div><p>暂无筛选结果</p></div>\`;
     }
