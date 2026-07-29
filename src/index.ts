@@ -233,7 +233,7 @@ function renderTable(stocks){
   let html = '<table><thead><tr><th>代码</th><th>名称</th><th>最新价</th><th>涨跌幅</th><th>换手率</th><th>市盈率</th><th>市净率</th></tr></thead><tbody>';
   for(const s of stocks){
     const cls = s.changePct>=0?'up':'down';
-    html += `<tr><td class="code">${s.code}</td><td>${s.name}</td><td>${s.price.toFixed(2)}</td><td class="${cls}">${s.changePct>=0?'+':''}${s.changePct.toFixed(2)}%</td><td>${s.turnoverRate.toFixed(2)}%</td><td>${s.peRatio.toFixed(2)}</td><td>${s.pbRatio.toFixed(2)}</td></tr>`;
+    html += \`<tr><td class="code">\${s.code}</td><td>\${s.name}</td><td>\${s.price.toFixed(2)}</td><td class="\${cls}">\${s.changePct>=0?'+':''}\${s.changePct.toFixed(2)}%</td><td>\${s.turnoverRate.toFixed(2)}%</td><td>\${s.peRatio.toFixed(2)}</td><td>\${s.pbRatio.toFixed(2)}</td></tr>\`;
   }
   html += '</tbody></table>';
   return html;
