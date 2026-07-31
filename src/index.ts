@@ -191,9 +191,10 @@ async function fetchStocksFromSina(): Promise<StockData[]> {
   const seen = new Set<string>();
   const baseUrl =
     'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/' +
-    'Market_Center.getHQNodeData?sort=code&asc=1&node=hs_a&_s_r_a=page';
+    'Market_Center.getHQNodeData?sort=changepercent&asc=0&node=hs_a&_s_r_a=page';
 
-  for (let page = 1; page <= 45; page++) {
+  let stop = false;
+  for (let page = 1; page <= 45 && !stop; page++) {
     const resp = await fetch(`${baseUrl}&page=${page}&num=100`, {
       headers: { Referer: 'https://finance.sina.com.cn/', 'User-Agent': 'Mozilla/5.0' },
     });
@@ -205,14 +206,19 @@ async function fetchStocksFromSina(): Promise<StockData[]> {
       const code: string = item.code;
       const name: string = item.name;
       const trade = parseFloat(item.trade);
+      const changePct = parseFloat(item.changepercent) || 0;
       if (!code || !name || isNaN(trade)) continue;
+      if (changePct < 9.5) {
+        stop = true;
+        break;
+      }
       if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
       if (seen.has(code)) continue;
       seen.add(code);
 
       results.push({
         code, name, price: trade,
-        changePct: parseFloat(item.changepercent) || 0,
+        changePct,
         turnoverRate: parseFloat(item.turnoverratio) || 0,
         peRatio: parseFloat(item.per) || 0,
         pbRatio: parseFloat(item.pb) || 0,
@@ -231,7 +237,8 @@ async function fetchStocksFromEastmoney(): Promise<StockData[]> {
     'https://push2.eastmoney.com/api/qt/clist/get?po=1&np=1&fltt=2&invt=2&fid=f3' +
     '&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f8,f9,f23,f20';
 
-  for (let page = 1; page <= 60; page++) {
+  let stop = false;
+  for (let page = 1; page <= 60 && !stop; page++) {
     const resp = await fetch(`${baseUrl}&pn=${page}&pz=100`, {
       headers: { Referer: 'https://quote.eastmoney.com/', 'User-Agent': 'Mozilla/5.0' },
     });
@@ -243,7 +250,12 @@ async function fetchStocksFromEastmoney(): Promise<StockData[]> {
     for (const item of diff) {
       const code: string = item.f12;
       const name: string = item.f14;
+      const changePct = parseFloat(item.f3) || 0;
       if (!code || !name) continue;
+      if (changePct < 9.5) {
+        stop = true;
+        break;
+      }
       if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
       if (seen.has(code)) continue;
       seen.add(code);
@@ -251,7 +263,7 @@ async function fetchStocksFromEastmoney(): Promise<StockData[]> {
       results.push({
         code, name,
         price: parseFloat(item.f2) || 0,
-        changePct: parseFloat(item.f3) || 0,
+        changePct,
         turnoverRate: parseFloat(item.f8) || 0,
         peRatio: parseFloat(item.f9) || 0,
         pbRatio: parseFloat(item.f23) || 0,
@@ -571,6 +583,7 @@ async function loadLogs(){
     content.innerHTML = '<div class="log-empty">加载失败: ' + escapeHtml(e.message) + '</div>';
   }
 }
+document.getElementById('triggerBtn').addEventListener('click', triggerScreening);
 document.getElementById('logBtn').addEventListener('click', () => { logPanel.style.display = 'block'; loadLogs(); });
 document.getElementById('logClose').addEventListener('click', () => { logPanel.style.display = 'none'; });
 document.getElementById('logRefresh').addEventListener('click', loadLogs);
