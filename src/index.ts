@@ -186,93 +186,99 @@ function matches(s: StockData): boolean {
   return true;
 }
 
-async function fetchStocksFromSina(): Promise<StockData[]> {
+interface ApiSource {
+  name: string;
+  referer: string;
+  maxPages: number;
+  buildUrl: (page: number) => string;
+  extractItems: (json: any) => any[] | null;
+  mapItem: (item: any) => StockData | null;
+}
+
+const STOCK_CODE_RE = /^(00[0123]|30[0123]|60[0123])/;
+
+async function fetchStocksFromApi(source: ApiSource): Promise<StockData[]> {
   const results: StockData[] = [];
   const seen = new Set<string>();
-  const baseUrl =
-    'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/' +
-    'Market_Center.getHQNodeData?sort=changepercent&asc=0&node=hs_a&_s_r_a=page';
-
   let stop = false;
-  for (let page = 1; page <= 45 && !stop; page++) {
-    const resp = await fetch(`${baseUrl}&page=${page}&num=100`, {
-      headers: { Referer: 'https://finance.sina.com.cn/', 'User-Agent': 'Mozilla/5.0' },
+  for (let page = 1; page <= source.maxPages && !stop; page++) {
+    const resp = await fetch(source.buildUrl(page), {
+      headers: { Referer: source.referer, 'User-Agent': 'Mozilla/5.0' },
     });
-    if (!resp.ok) throw new Error(`Sina API error: ${resp.status}`);
-    const data: any[] = await resp.json();
-    if (!Array.isArray(data) || data.length === 0) break;
+    if (!resp.ok) throw new Error(`${source.name} API error: ${resp.status}`);
+    const json: any = await resp.json();
+    const items = source.extractItems(json);
+    if (!Array.isArray(items) || items.length === 0) break;
 
-    for (const item of data) {
-      const code: string = item.code;
-      const name: string = item.name;
-      const trade = parseFloat(item.trade);
-      const changePct = parseFloat(item.changepercent) || 0;
-      if (!code || !name || isNaN(trade)) continue;
-      if (changePct < 9.5) {
+    for (const item of items) {
+      const stock = source.mapItem(item);
+      if (!stock) continue;
+      if (stock.changePct < 9.5) {
         stop = true;
         break;
       }
-      if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
-      if (seen.has(code)) continue;
-      seen.add(code);
-
-      results.push({
-        code, name, price: trade,
-        changePct,
-        turnoverRate: parseFloat(item.turnoverratio) || 0,
-        peRatio: parseFloat(item.per) || 0,
-        pbRatio: parseFloat(item.pb) || 0,
-        marketCap: (parseFloat(item.mktcap) || 0) / 10000,
-      });
+      if (!STOCK_CODE_RE.test(stock.code)) continue;
+      if (seen.has(stock.code)) continue;
+      seen.add(stock.code);
+      results.push(stock);
     }
-    if (data.length < 100) break;
+    if (items.length < 100) break;
   }
   return results;
 }
 
-async function fetchStocksFromEastmoney(): Promise<StockData[]> {
-  const results: StockData[] = [];
-  const seen = new Set<string>();
+function fetchStocksFromSina(): Promise<StockData[]> {
+  const baseUrl =
+    'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/' +
+    'Market_Center.getHQNodeData?sort=changepercent&asc=0&node=hs_a&_s_r_a=page';
+  return fetchStocksFromApi({
+    name: 'Sina',
+    referer: 'https://finance.sina.com.cn/',
+    maxPages: 45,
+    buildUrl: (page) => `${baseUrl}&page=${page}&num=100`,
+    extractItems: (json) => (Array.isArray(json) ? json : null),
+    mapItem: (item) => {
+      const code: string = item.code;
+      const name: string = item.name;
+      const trade = parseFloat(item.trade);
+      if (!code || !name || isNaN(trade)) return null;
+      return {
+        code, name, price: trade,
+        changePct: parseFloat(item.changepercent) || 0,
+        turnoverRate: parseFloat(item.turnoverratio) || 0,
+        peRatio: parseFloat(item.per) || 0,
+        pbRatio: parseFloat(item.pb) || 0,
+        marketCap: (parseFloat(item.mktcap) || 0) / 10000,
+      };
+    },
+  });
+}
+
+function fetchStocksFromEastmoney(): Promise<StockData[]> {
   const baseUrl =
     'https://push2.eastmoney.com/api/qt/clist/get?po=1&np=1&fltt=2&invt=2&fid=f3' +
     '&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f8,f9,f23,f20';
-
-  let stop = false;
-  for (let page = 1; page <= 60 && !stop; page++) {
-    const resp = await fetch(`${baseUrl}&pn=${page}&pz=100`, {
-      headers: { Referer: 'https://quote.eastmoney.com/', 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!resp.ok) throw new Error(`Eastmoney API error: ${resp.status}`);
-    const json: any = await resp.json();
-    const diff: any[] = json && json.data && json.data.diff;
-    if (!Array.isArray(diff) || diff.length === 0) break;
-
-    for (const item of diff) {
+  return fetchStocksFromApi({
+    name: 'Eastmoney',
+    referer: 'https://quote.eastmoney.com/',
+    maxPages: 60,
+    buildUrl: (page) => `${baseUrl}&pn=${page}&pz=100`,
+    extractItems: (json) => (json && json.data && json.data.diff ? json.data.diff : null),
+    mapItem: (item) => {
       const code: string = item.f12;
       const name: string = item.f14;
-      const changePct = parseFloat(item.f3) || 0;
-      if (!code || !name) continue;
-      if (changePct < 9.5) {
-        stop = true;
-        break;
-      }
-      if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
-      if (seen.has(code)) continue;
-      seen.add(code);
-
-      results.push({
+      if (!code || !name) return null;
+      return {
         code, name,
         price: parseFloat(item.f2) || 0,
-        changePct,
+        changePct: parseFloat(item.f3) || 0,
         turnoverRate: parseFloat(item.f8) || 0,
         peRatio: parseFloat(item.f9) || 0,
         pbRatio: parseFloat(item.f23) || 0,
         marketCap: (parseFloat(item.f20) || 0) / 100000000,
-      });
-    }
-    if (diff.length < 100) break;
-  }
-  return results;
+      };
+    },
+  });
 }
 
 async function fetchStocks(logger: Logger): Promise<StockData[]> {
@@ -397,12 +403,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .history-item.active .count{background:#4a7cff;color:#fff}
 .main{flex:1;padding:24px 32px;overflow-y:auto}
 .main h2{font-size:18px;margin-bottom:20px;color:#1a1a2e}
-.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:24px}
-.stat-card{background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
-.stat-card .label{font-size:12px;color:#8899b4;margin-bottom:4px}
-.stat-card .value{font-size:22px;font-weight:700;color:#1a1a2e}
-.stat-card .value.green{color:#00c853}
-.stat-card .value.red{color:#ff1744}
 .chart-container{background:#fff;border-radius:10px;padding:20px;margin-bottom:24px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .chart-container h3{font-size:14px;color:#8899b4;margin-bottom:12px}
 .table-container{background:#fff;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.06);overflow:hidden}
@@ -420,7 +420,7 @@ tr:hover td{background:#f8f9fc}
 .loading{text-align:center;padding:60px;color:#8899b4}
 .loading .spinner{display:inline-block;width:32px;height:32px;border:3px solid #e8ecf1;border-top-color:#4a7cff;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:12px}
 @keyframes spin{to{transform:rotate(360deg)}}
-@media(max-width:768px){.container{flex-direction:column}.sidebar{width:100%;min-width:auto;border-right:none;border-bottom:1px solid #e8ecf1;padding:12px 0}.sidebar h3{padding:0 16px}.history-item{padding:8px 16px}.main{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:768px){.container{flex-direction:column}.sidebar{width:100%;min-width:auto;border-right:none;border-bottom:1px solid #e8ecf1;padding:12px 0}.sidebar h3{padding:0 16px}.history-item{padding:8px 16px}.main{padding:16px}}
 .log-panel{display:none;position:fixed;right:20px;bottom:20px;width:560px;max-width:calc(100vw - 40px);max-height:70vh;background:#1e1e2e;color:#d4d4d4;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);overflow:hidden;z-index:100}
 .log-header{display:flex;align-items:center;gap:8px;padding:12px 16px;background:#16161f;border-bottom:1px solid #333}
 .log-header .title{font-weight:600;font-size:14px;flex:1}
