@@ -1,6 +1,6 @@
 import type { ScheduledEvent, ExecutionContext } from '@cloudflare/workers-types';
 
-const HOLIDAYS = new Set<string>([
+const FALLBACK_HOLIDAYS = new Set<string>([
   '20250101',
   '20250128','20250129','20250130','20250131',
   '20250201','20250202','20250203','20250204',
@@ -17,7 +17,7 @@ const HOLIDAYS = new Set<string>([
   '20261001','20261002','20261003','20261004','20261005','20261006','20261007',
 ]);
 
-const MAKEUP_WORKDAYS = new Set<string>([
+const FALLBACK_MAKEUP_WORKDAYS = new Set<string>([
   '20250126','20250208','20250427','20250510','20250928','20251011',
   '20260110','20260221','20260222','20260509','20261010','20261011',
 ]);
@@ -26,6 +26,94 @@ export interface Env {
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
   STOCK_HUNTER: KVNamespace;
+}
+
+function getShanghaiDateParts(): { year: string; month: string; day: string } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+  return { year: map.year, month: map.month, day: map.day };
+}
+
+function getShanghaiDateStr(): string {
+  const { year, month, day } = getShanghaiDateParts();
+  return `${year}${month}${day}`;
+}
+
+function getShanghaiDayOfWeek(): number {
+  const { year, month, day } = getShanghaiDateParts();
+  return new Date(`${year}-${month}-${day}T00:00:00+08:00`).getDay();
+}
+
+interface Calendar {
+  holidays: Set<string>;
+  makeupWorkdays: Set<string>;
+}
+
+function fallbackCalendar(year: string): Calendar {
+  const holidays = new Set<string>();
+  const makeupWorkdays = new Set<string>();
+  for (const d of FALLBACK_HOLIDAYS) if (d.startsWith(year)) holidays.add(d);
+  for (const d of FALLBACK_MAKEUP_WORKDAYS) if (d.startsWith(year)) makeupWorkdays.add(d);
+  return { holidays, makeupWorkdays };
+}
+
+async function fetchCalendarFromApi(year: string): Promise<Calendar> {
+  const url = `https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/${year}.json`;
+  const resp = await fetch(url, {
+    headers: { 'User-Agent': 'stock-hunter-worker', Referer: 'https://github.com/' },
+  });
+  if (!resp.ok) throw new Error(`节假日 API error: ${resp.status}`);
+  const data: any = await resp.json();
+  const days: { name: string; date: string; isOffDay: boolean }[] = Array.isArray(data)
+    ? data
+    : data && data.days;
+  if (!Array.isArray(days)) throw new Error('节假日数据格式异常');
+  const holidays = new Set<string>();
+  const makeupWorkdays = new Set<string>();
+  for (const item of days) {
+    const d = item.date.replace(/-/g, '');
+    if (item.isOffDay) holidays.add(d);
+    else makeupWorkdays.add(d);
+  }
+  return { holidays, makeupWorkdays };
+}
+
+async function getCalendar(year: string, env: Env): Promise<Calendar> {
+  const cacheKey = `calendar:${year}`;
+  try {
+    const cached = await env.STOCK_HUNTER.get(cacheKey);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      return {
+        holidays: new Set(parsed.holidays),
+        makeupWorkdays: new Set(parsed.makeupWorkdays),
+      };
+    }
+  } catch (e) {
+    console.log('读取节假日缓存失败:', e);
+  }
+
+  try {
+    const calendar = await fetchCalendarFromApi(year);
+    await env.STOCK_HUNTER.put(
+      cacheKey,
+      JSON.stringify({
+        holidays: [...calendar.holidays],
+        makeupWorkdays: [...calendar.makeupWorkdays],
+      }),
+      { expirationTtl: 60 * 60 * 24 * 7 },
+    );
+    return calendar;
+  } catch (e) {
+    console.log('节假日 API 获取失败，使用内置日历表:', e);
+    return fallbackCalendar(year);
+  }
 }
 
 interface StockData {
@@ -45,12 +133,12 @@ interface ScreeningResult {
   stocks: StockData[];
 }
 
-function isTradingDay(): boolean {
-  const d = new Date();
-  const dateStr = d.toISOString().slice(0, 10).replace(/-/g, '');
-  const day = d.getDay();
-  if (MAKEUP_WORKDAYS.has(dateStr)) return true;
-  if (HOLIDAYS.has(dateStr)) return false;
+async function isTradingDay(env: Env): Promise<boolean> {
+  const dateStr = getShanghaiDateStr();
+  const { holidays, makeupWorkdays } = await getCalendar(dateStr.slice(0, 4), env);
+  if (makeupWorkdays.has(dateStr)) return true;
+  if (holidays.has(dateStr)) return false;
+  const day = getShanghaiDayOfWeek();
   return day >= 1 && day <= 5;
 }
 
@@ -156,7 +244,7 @@ async function fetchStocks(): Promise<StockData[]> {
 }
 
 function formatStockMessage(stocks: StockData[]): string {
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+  const dateStr = getShanghaiDateStr();
 
   if (stocks.length === 0) {
     return `*优选A股股票 (${dateStr})*\n没有符合条件的股票`;
@@ -195,7 +283,7 @@ async function sendTelegram(env: Env, stocks: StockData[]): Promise<void> {
 
 async function saveToKV(env: Env, stocks: StockData[]): Promise<void> {
   const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const dateStr = getShanghaiDateStr();
   const result: ScreeningResult = {
     date: dateStr,
     updatedAt: now.toISOString(),
@@ -425,7 +513,7 @@ export default {
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<void> {
-    if (!isTradingDay()) {
+    if (!(await isTradingDay(env))) {
       console.log('今天不是交易日，跳过');
       return;
     }
