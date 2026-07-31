@@ -18,9 +18,12 @@ jobs:
       - uses: cloudflare/wrangler-action@v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          secrets: |
-            TELEGRAM_BOT_TOKEN
-            TELEGRAM_CHAT_ID
+
+      - name: Upload secrets
+        run: |
+          printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TELEGRAM_BOT_TOKEN" "$TELEGRAM_CHAT_ID" > secrets.dev.vars
+          npx --no-install wrangler versions secret bulk secrets.dev.vars --name stock-hunter
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
