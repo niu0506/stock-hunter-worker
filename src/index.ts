@@ -28,6 +28,41 @@ export interface Env {
   STOCK_HUNTER: KVNamespace;
 }
 
+const MAX_LOGS = 500;
+
+interface LogEntry {
+  time: string;
+  level: 'info' | 'error';
+  message: string;
+}
+
+type Logger = { info: (message: unknown) => void; error: (message: unknown) => void };
+
+function createLogger(env: Env, ctx: ExecutionContext): Logger {
+  const write = async (level: LogEntry['level'], message: string): Promise<void> => {
+    try {
+      const entry: LogEntry = { time: new Date().toISOString(), level, message };
+      const raw = await env.STOCK_HUNTER.get('logs');
+      const entries: LogEntry[] = raw ? JSON.parse(raw) : [];
+      entries.push(entry);
+      while (entries.length > MAX_LOGS) entries.shift();
+      await env.STOCK_HUNTER.put('logs', JSON.stringify(entries));
+    } catch (e) {
+      console.error('写入日志失败:', e);
+    }
+  };
+  return {
+    info: (m) => {
+      console.log(String(m));
+      ctx.waitUntil(write('info', String(m)));
+    },
+    error: (m) => {
+      console.error(String(m));
+      ctx.waitUntil(write('error', String(m)));
+    },
+  };
+}
+
 function getShanghaiDateParts(): { year: string; month: string; day: string } {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai',
@@ -84,7 +119,7 @@ async function fetchCalendarFromApi(year: string): Promise<Calendar> {
   return { holidays, makeupWorkdays };
 }
 
-async function getCalendar(year: string, env: Env): Promise<Calendar> {
+async function getCalendar(year: string, env: Env, logger: Logger): Promise<Calendar> {
   const cacheKey = `calendar:${year}`;
   try {
     const cached = await env.STOCK_HUNTER.get(cacheKey);
@@ -96,7 +131,7 @@ async function getCalendar(year: string, env: Env): Promise<Calendar> {
       };
     }
   } catch (e) {
-    console.log('读取节假日缓存失败:', e);
+    logger.info(`读取节假日缓存失败: ${e}`);
   }
 
   try {
@@ -111,7 +146,7 @@ async function getCalendar(year: string, env: Env): Promise<Calendar> {
     );
     return calendar;
   } catch (e) {
-    console.log('节假日 API 获取失败，使用内置日历表:', e);
+    logger.info(`节假日 API 获取失败，使用内置日历表: ${e}`);
     return fallbackCalendar(year);
   }
 }
@@ -133,9 +168,9 @@ interface ScreeningResult {
   stocks: StockData[];
 }
 
-async function isTradingDay(env: Env): Promise<boolean> {
+async function isTradingDay(env: Env, logger: Logger): Promise<boolean> {
   const dateStr = getShanghaiDateStr();
-  const { holidays, makeupWorkdays } = await getCalendar(dateStr.slice(0, 4), env);
+  const { holidays, makeupWorkdays } = await getCalendar(dateStr.slice(0, 4), env, logger);
   if (makeupWorkdays.has(dateStr)) return true;
   if (holidays.has(dateStr)) return false;
   const day = getShanghaiDayOfWeek();
@@ -228,7 +263,7 @@ async function fetchStocksFromEastmoney(): Promise<StockData[]> {
   return results;
 }
 
-async function fetchStocks(): Promise<StockData[]> {
+async function fetchStocks(logger: Logger): Promise<StockData[]> {
   const sources = [fetchStocksFromSina, fetchStocksFromEastmoney];
   let lastError: unknown = null;
   for (const source of sources) {
@@ -237,7 +272,7 @@ async function fetchStocks(): Promise<StockData[]> {
       if (data.length > 0) return data;
     } catch (e) {
       lastError = e;
-      console.log(`数据源 ${source.name} 获取失败:`, e);
+      logger.info(`数据源 ${source.name} 获取失败: ${e}`);
     }
   }
   throw lastError instanceof Error ? lastError : new Error('所有数据源均未获取到数据');
@@ -302,18 +337,18 @@ async function saveToKV(env: Env, stocks: StockData[]): Promise<void> {
   }
 }
 
-async function handleScreening(env: Env): Promise<string> {
-  console.log('开始获取A股数据');
+async function handleScreening(env: Env, logger: Logger): Promise<string> {
+  logger.info('开始获取A股数据');
 
-  const allData = await fetchStocks();
-  console.log(`获取到 ${allData.length} 条股票数据`);
+  const allData = await fetchStocks(logger);
+  logger.info(`获取到 ${allData.length} 条股票数据`);
 
   if (allData.length === 0) return '未获取到股票数据';
 
   const selected = allData.filter(matches);
   selected.sort((a: StockData, b: StockData) => b.changePct - a.changePct);
 
-  console.log(`筛选出 ${selected.length} 只符合条件的股票`);
+  logger.info(`筛选出 ${selected.length} 只符合条件的股票`);
 
   await Promise.all([
     sendTelegram(env, selected),
@@ -337,7 +372,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:20px 32px;display:flex;align-items:center;gap:16px}
 .header h1{font-size:22px;font-weight:600}
 .header .sub{font-size:13px;color:#8899b4}
-.header .trigger-btn{margin-left:auto;background:#4a7cff;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
+.header .trigger-btn{background:#4a7cff;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
 .header .trigger-btn:hover{background:#3a66d6}
 .header .trigger-btn:disabled{background:#8899b4;cursor:not-allowed}
 .container{display:flex;gap:0;max-width:1400px;margin:0 auto;min-height:calc(100vh-80px)}
@@ -374,12 +409,24 @@ tr:hover td{background:#f8f9fc}
 .loading .spinner{display:inline-block;width:32px;height:32px;border:3px solid #e8ecf1;border-top-color:#4a7cff;border-radius:50%;animation:spin .8s linear infinite;margin-bottom:12px}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media(max-width:768px){.container{flex-direction:column}.sidebar{width:100%;min-width:auto;border-right:none;border-bottom:1px solid #e8ecf1;padding:12px 0}.sidebar h3{padding:0 16px}.history-item{padding:8px 16px}.main{padding:16px}.stats{grid-template-columns:repeat(2,1fr)}}
+.log-panel{display:none;position:fixed;right:20px;bottom:20px;width:560px;max-width:calc(100vw - 40px);max-height:70vh;background:#1e1e2e;color:#d4d4d4;border-radius:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);overflow:hidden;z-index:100}
+.log-header{display:flex;align-items:center;gap:8px;padding:12px 16px;background:#16161f;border-bottom:1px solid #333}
+.log-header .title{font-weight:600;font-size:14px;flex:1}
+.log-header button{background:#333;color:#fff;border:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer}
+.log-header button:hover{background:#444}
+.log-body{overflow-y:auto;max-height:calc(70vh - 46px);padding:8px 0;font-family:'SF Mono',Menlo,monospace;font-size:12px}
+.log-line{padding:4px 16px;display:flex;gap:10px;border-bottom:1px solid #2a2a3a}
+.log-line.error{background:rgba(255,23,68,.08)}
+.log-time{color:#8899b4;white-space:nowrap}
+.log-msg{word-break:break-all;white-space:pre-wrap}
+.log-empty{padding:20px 16px;color:#8899b4}
 </style>
 </head>
 <body>
 <div class="header">
   <h1>📈 StockHunter</h1>
   <span class="sub">A股优选股票筛选</span>
+  <button class="trigger-btn" id="logBtn" style="margin-left:auto;background:#8899b4">📋 日志</button>
   <button class="trigger-btn" id="triggerBtn">🔄 手动触发</button>
 </div>
 <div class="container">
@@ -393,6 +440,14 @@ tr:hover td{background:#f8f9fc}
       <p>加载中...</p>
     </div>
   </div>
+</div>
+<div class="log-panel" id="logPanel">
+  <div class="log-header">
+    <span class="title">📋 运行日志</span>
+    <button id="logRefresh">刷新</button>
+    <button id="logClose">✕</button>
+  </div>
+  <div class="log-body" id="logContent"><div class="log-empty">加载中...</div></div>
 </div>
 <script>
 const API_BASE = '';
@@ -500,7 +555,25 @@ async function triggerScreening(){
     btn.textContent = '🔄 手动触发';
   }
 }
-document.getElementById('triggerBtn').addEventListener('click', triggerScreening);
+const logPanel = document.getElementById('logPanel');
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+async function loadLogs(){
+  const content = document.getElementById('logContent');
+  content.innerHTML = '<div class="log-empty">加载中...</div>';
+  try {
+    const entries = await fetchJSON('/api/logs');
+    content.innerHTML = entries.length === 0
+      ? '<div class="log-empty">暂无日志</div>'
+      : entries.slice().reverse().map(e =>
+          \`<div class="log-line \${e.level}"><span class="log-time">\${new Date(e.time).toLocaleString('zh-CN')}</span><span class="log-msg">\${escapeHtml(e.message)}</span></div>\`
+        ).join('');
+  } catch(e){
+    content.innerHTML = '<div class="log-empty">加载失败: ' + escapeHtml(e.message) + '</div>';
+  }
+}
+document.getElementById('logBtn').addEventListener('click', () => { logPanel.style.display = 'block'; loadLogs(); });
+document.getElementById('logClose').addEventListener('click', () => { logPanel.style.display = 'none'; });
+document.getElementById('logRefresh').addEventListener('click', loadLogs);
 init();
 </script>
 </body>
@@ -511,27 +584,29 @@ export default {
   async scheduled(
     _event: ScheduledEvent,
     env: Env,
-    _ctx: ExecutionContext,
+    ctx: ExecutionContext,
   ): Promise<void> {
-    if (!(await isTradingDay(env))) {
-      console.log('今天不是交易日，跳过');
+    const logger = createLogger(env, ctx);
+    if (!(await isTradingDay(env, logger))) {
+      logger.info('今天不是交易日，跳过');
       return;
     }
     try {
-      const result = await handleScreening(env);
-      console.log(result);
+      const result = await handleScreening(env, logger);
+      logger.info(result);
     } catch (e) {
-      console.error('执行失败:', e);
+      logger.error(`执行失败: ${e}`);
     }
   },
 
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const logger = createLogger(env, ctx);
 
     if (path === '/trigger') {
       try {
-        const result = await handleScreening(env);
+        const result = await handleScreening(env, logger);
         return new Response(JSON.stringify({ success: true, message: result }), {
           headers: { 'Content-Type': 'application/json' },
         });
@@ -562,6 +637,13 @@ export default {
         }),
       );
       return new Response(JSON.stringify(items.filter(Boolean)), {
+        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+      });
+    }
+
+    if (path === '/api/logs') {
+      const raw = await env.STOCK_HUNTER.get('logs');
+      return new Response(raw || '[]', {
         headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
       });
     }
