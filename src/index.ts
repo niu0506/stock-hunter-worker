@@ -63,7 +63,7 @@ function matches(s: StockData): boolean {
   return true;
 }
 
-async function fetchStocks(): Promise<StockData[]> {
+async function fetchStocksFromSina(): Promise<StockData[]> {
   const results: StockData[] = [];
   const seen = new Set<string>();
   const baseUrl =
@@ -99,6 +99,60 @@ async function fetchStocks(): Promise<StockData[]> {
     if (data.length < 100) break;
   }
   return results;
+}
+
+async function fetchStocksFromEastmoney(): Promise<StockData[]> {
+  const results: StockData[] = [];
+  const seen = new Set<string>();
+  const baseUrl =
+    'https://push2.eastmoney.com/api/qt/clist/get?po=1&np=1&fltt=2&invt=2&fid=f3' +
+    '&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f8,f9,f23,f20';
+
+  for (let page = 1; page <= 60; page++) {
+    const resp = await fetch(`${baseUrl}&pn=${page}&pz=100`, {
+      headers: { Referer: 'https://quote.eastmoney.com/', 'User-Agent': 'Mozilla/5.0' },
+    });
+    if (!resp.ok) throw new Error(`Eastmoney API error: ${resp.status}`);
+    const json: any = await resp.json();
+    const diff: any[] = json && json.data && json.data.diff;
+    if (!Array.isArray(diff) || diff.length === 0) break;
+
+    for (const item of diff) {
+      const code: string = item.f12;
+      const name: string = item.f14;
+      if (!code || !name) continue;
+      if (!/^(00[0123]|30[0123]|60[0123])/.test(code)) continue;
+      if (seen.has(code)) continue;
+      seen.add(code);
+
+      results.push({
+        code, name,
+        price: parseFloat(item.f2) || 0,
+        changePct: parseFloat(item.f3) || 0,
+        turnoverRate: parseFloat(item.f8) || 0,
+        peRatio: parseFloat(item.f9) || 0,
+        pbRatio: parseFloat(item.f23) || 0,
+        marketCap: (parseFloat(item.f20) || 0) / 100000000,
+      });
+    }
+    if (diff.length < 100) break;
+  }
+  return results;
+}
+
+async function fetchStocks(): Promise<StockData[]> {
+  const sources = [fetchStocksFromSina, fetchStocksFromEastmoney];
+  let lastError: unknown = null;
+  for (const source of sources) {
+    try {
+      const data = await source();
+      if (data.length > 0) return data;
+    } catch (e) {
+      lastError = e;
+      console.log(`数据源 ${source.name} 获取失败:`, e);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('所有数据源均未获取到数据');
 }
 
 function formatStockMessage(stocks: StockData[]): string {
