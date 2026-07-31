@@ -195,6 +195,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:20px 32px;display:flex;align-items:center;gap:16px}
 .header h1{font-size:22px;font-weight:600}
 .header .sub{font-size:13px;color:#8899b4}
+.header .trigger-btn{margin-left:auto;background:#4a7cff;color:#fff;border:none;border-radius:8px;padding:10px 18px;font-size:14px;font-weight:600;cursor:pointer;transition:background .15s}
+.header .trigger-btn:hover{background:#3a66d6}
+.header .trigger-btn:disabled{background:#8899b4;cursor:not-allowed}
 .container{display:flex;gap:0;max-width:1400px;margin:0 auto;min-height:calc(100vh-80px)}
 .sidebar{width:260px;min-width:260px;background:#fff;border-right:1px solid #e8ecf1;padding:20px 0;overflow-y:auto}
 .sidebar h3{font-size:13px;font-weight:600;color:#8899b4;text-transform:uppercase;padding:0 20px;margin-bottom:12px;letter-spacing:.5px}
@@ -235,6 +238,7 @@ tr:hover td{background:#f8f9fc}
 <div class="header">
   <h1>📈 StockHunter</h1>
   <span class="sub">A股优选股票筛选</span>
+  <button class="trigger-btn" id="triggerBtn">🔄 手动触发</button>
 </div>
 <div class="container">
   <div class="sidebar" id="sidebar">
@@ -336,6 +340,25 @@ async function init(){
     main.innerHTML = \`<div class="empty-state"><div class="big">⚠️</div><p>加载失败: \${e.message}</p></div>\`;
   }
 }
+
+async function triggerScreening(){
+  const btn = document.getElementById('triggerBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 筛选中...';
+  try {
+    const r = await fetch('/trigger', {method:'POST'});
+    const res = await r.json();
+    if(!r.ok) throw new Error(res.error || '触发失败');
+    alert('✅ ' + res.message);
+    await init();
+  } catch(e){
+    alert('❌ 触发失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 手动触发';
+  }
+}
+document.getElementById('triggerBtn').addEventListener('click', triggerScreening);
 init();
 </script>
 </body>
