@@ -30,6 +30,13 @@ export interface Env {
 
 const MAX_LOGS = 500;
 
+function json(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
+  });
+}
+
 interface LogEntry {
   time: string;
   level: 'info' | 'error';
@@ -53,34 +60,35 @@ function createLogger(env: Env, ctx: ExecutionContext): Logger {
   };
   return {
     info: (m) => {
-      console.log(String(m));
+      console.log(m);
       ctx.waitUntil(write('info', String(m)));
     },
     error: (m) => {
-      console.error(String(m));
+      console.error(m);
       ctx.waitUntil(write('error', String(m)));
     },
   };
 }
 
-function getShanghaiDateParts(): { year: string; month: string; day: string } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date());
+const SHANGHAI_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function getShanghaiDateParts(): { year: string; month: string; day: string } {
   const map: Record<string, string> = {};
-  for (const p of parts) map[p.type] = p.value;
+  for (const p of SHANGHAI_FORMATTER.formatToParts(new Date())) map[p.type] = p.value;
   return { year: map.year, month: map.month, day: map.day };
 }
 
-function getShanghaiDateStr(): string {
+export function getShanghaiDateStr(): string {
   const { year, month, day } = getShanghaiDateParts();
   return `${year}${month}${day}`;
 }
 
-function getShanghaiDayOfWeek(): number {
+export function getShanghaiDayOfWeek(): number {
   const { year, month, day } = getShanghaiDateParts();
   return new Date(`${year}-${month}-${day}T00:00:00+08:00`).getDay();
 }
@@ -98,7 +106,7 @@ function fallbackCalendar(year: string): Calendar {
   return { holidays, makeupWorkdays };
 }
 
-async function fetchCalendarFromApi(year: string): Promise<Calendar> {
+export async function fetchCalendarFromApi(year: string): Promise<Calendar> {
   const url = `https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/${year}.json`;
   const resp = await fetch(url, {
     headers: { 'User-Agent': 'stock-hunter-worker', Referer: 'https://github.com/' },
@@ -168,7 +176,7 @@ interface ScreeningResult {
   stocks: StockData[];
 }
 
-async function isTradingDay(env: Env, logger: Logger): Promise<boolean> {
+export async function isTradingDay(env: Env, logger: Logger): Promise<boolean> {
   const dateStr = getShanghaiDateStr();
   const { holidays, makeupWorkdays } = await getCalendar(dateStr.slice(0, 4), env, logger);
   if (makeupWorkdays.has(dateStr)) return true;
@@ -177,12 +185,12 @@ async function isTradingDay(env: Env, logger: Logger): Promise<boolean> {
   return day >= 1 && day <= 5;
 }
 
-function matches(s: StockData): boolean {
-  if (isNaN(s.marketCap) || s.marketCap < 50) return false;
-  if (isNaN(s.peRatio) || s.peRatio < 0 || s.peRatio > 40) return false;
-  if (isNaN(s.turnoverRate) || s.turnoverRate < 3) return false;
-  if (isNaN(s.changePct) || s.changePct < 9.5) return false;
-  if (isNaN(s.pbRatio) || s.pbRatio > 3) return false;
+export function matches(s: StockData): boolean {
+  if (s.marketCap < 50) return false;
+  if (s.peRatio < 0 || s.peRatio > 40) return false;
+  if (s.turnoverRate < 3) return false;
+  if (s.changePct < 9.5) return false;
+  if (s.pbRatio > 3) return false;
   return true;
 }
 
@@ -197,11 +205,10 @@ interface ApiSource {
 
 const STOCK_CODE_RE = /^(00[0123]|30[0123]|60[0123])/;
 
-async function fetchStocksFromApi(source: ApiSource): Promise<StockData[]> {
+export async function fetchStocksFromApi(source: ApiSource): Promise<StockData[]> {
   const results: StockData[] = [];
   const seen = new Set<string>();
-  let stop = false;
-  for (let page = 1; page <= source.maxPages && !stop; page++) {
+  for (let page = 1; page <= source.maxPages; page++) {
     const resp = await fetch(source.buildUrl(page), {
       headers: { Referer: source.referer, 'User-Agent': 'Mozilla/5.0' },
     });
@@ -210,11 +217,12 @@ async function fetchStocksFromApi(source: ApiSource): Promise<StockData[]> {
     const items = source.extractItems(json);
     if (!Array.isArray(items) || items.length === 0) break;
 
+    let belowThreshold = false;
     for (const item of items) {
       const stock = source.mapItem(item);
       if (!stock) continue;
       if (stock.changePct < 9.5) {
-        stop = true;
+        belowThreshold = true;
         break;
       }
       if (!STOCK_CODE_RE.test(stock.code)) continue;
@@ -222,12 +230,12 @@ async function fetchStocksFromApi(source: ApiSource): Promise<StockData[]> {
       seen.add(stock.code);
       results.push(stock);
     }
-    if (items.length < 100) break;
+    if (belowThreshold || items.length < 100) break;
   }
   return results;
 }
 
-function fetchStocksFromSina(): Promise<StockData[]> {
+export function fetchStocksFromSina(): Promise<StockData[]> {
   const baseUrl =
     'https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/' +
     'Market_Center.getHQNodeData?sort=changepercent&asc=0&node=hs_a&_s_r_a=page';
@@ -254,7 +262,7 @@ function fetchStocksFromSina(): Promise<StockData[]> {
   });
 }
 
-function fetchStocksFromEastmoney(): Promise<StockData[]> {
+export function fetchStocksFromEastmoney(): Promise<StockData[]> {
   const baseUrl =
     'https://push2.eastmoney.com/api/qt/clist/get?po=1&np=1&fltt=2&invt=2&fid=f3' +
     '&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&fields=f12,f14,f2,f3,f8,f9,f23,f20';
@@ -281,24 +289,27 @@ function fetchStocksFromEastmoney(): Promise<StockData[]> {
   });
 }
 
-async function fetchStocks(logger: Logger): Promise<StockData[]> {
-  const sources = [fetchStocksFromSina, fetchStocksFromEastmoney];
-  let lastError: unknown = null;
-  for (const source of sources) {
-    try {
-      const data = await source();
-      if (data.length > 0) return data;
-    } catch (e) {
-      lastError = e;
-      logger.info(`数据源 ${source.name} 获取失败: ${e}`);
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('所有数据源均未获取到数据');
+export async function fetchStocks(logger: Logger): Promise<StockData[]> {
+  const sources: { name: string; fetch: () => Promise<StockData[]> }[] = [
+    { name: '新浪', fetch: fetchStocksFromSina },
+    { name: '东方财富', fetch: fetchStocksFromEastmoney },
+  ];
+  const settled = await Promise.all(
+    sources.map(async (s) => {
+      try {
+        return { name: s.name, data: await s.fetch() };
+      } catch (e) {
+        logger.info(`数据源 ${s.name} 获取失败: ${e}`);
+        return { name: s.name, data: [] as StockData[] };
+      }
+    }),
+  );
+  const winner = settled.find((r) => r.data.length > 0);
+  if (winner) return winner.data;
+  throw new Error('所有数据源均未获取到数据');
 }
 
-function formatStockMessage(stocks: StockData[]): string {
-  const dateStr = getShanghaiDateStr();
-
+export function formatStockMessage(stocks: StockData[], dateStr = getShanghaiDateStr()): string {
   if (stocks.length === 0) {
     return `*优选A股股票 (${dateStr})*\n没有符合条件的股票`;
   }
@@ -318,14 +329,14 @@ function formatStockMessage(stocks: StockData[]): string {
   return `*优选A股股票 (${dateStr})*\n共 ${stocks.length} 只股票\n\n${lines.join('')}`;
 }
 
-async function sendTelegram(env: Env, stocks: StockData[]): Promise<void> {
+async function sendTelegram(env: Env, stocks: StockData[], dateStr: string): Promise<void> {
   const url = `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`;
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       chat_id: env.TELEGRAM_CHAT_ID,
-      text: formatStockMessage(stocks),
+      text: formatStockMessage(stocks, dateStr),
       parse_mode: 'Markdown',
     }),
   });
@@ -334,9 +345,8 @@ async function sendTelegram(env: Env, stocks: StockData[]): Promise<void> {
   }
 }
 
-async function saveToKV(env: Env, stocks: StockData[]): Promise<void> {
+export async function saveToKV(env: Env, stocks: StockData[], dateStr = getShanghaiDateStr()): Promise<void> {
   const now = new Date();
-  const dateStr = getShanghaiDateStr();
   const result: ScreeningResult = {
     date: dateStr,
     updatedAt: now.toISOString(),
@@ -368,9 +378,11 @@ async function handleScreening(env: Env, logger: Logger): Promise<string> {
 
   logger.info(`筛选出 ${selected.length} 只符合条件的股票`);
 
+  const dateStr = getShanghaiDateStr();
+
   await Promise.all([
-    sendTelegram(env, selected),
-    saveToKV(env, selected),
+    sendTelegram(env, selected, dateStr),
+    saveToKV(env, selected, dateStr),
   ]);
 
   return `完成: ${selected.length} 只股票`;
@@ -521,9 +533,7 @@ async function loadDate(date){
   try {
     const result = await fetchJSON(\`/api/history/\${date}\`);
     main.innerHTML = renderMain(result);
-    const history = await fetchJSON('/api/history');
-    historyData = history||[];
-    renderHistory(history);
+    renderHistory(historyData||[]);
     initChart();
   } catch(e){
     main.innerHTML = \`<div class="empty-state"><div class="big">⚠️</div><p>加载失败: \${e.message}</p></div>\`;
@@ -620,22 +630,15 @@ export default {
     if (path === '/trigger') {
       try {
         const result = await handleScreening(env, logger);
-        return new Response(JSON.stringify({ success: true, message: result }), {
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return json({ success: true, message: result });
       } catch (e: any) {
-        return new Response(JSON.stringify({ success: false, error: e.message }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return json({ success: false, error: e.message }, 500);
       }
     }
 
     if (path === '/api/latest') {
       const data = await env.STOCK_HUNTER.get('latest');
-      return new Response(data || 'null', {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-      });
+      return json(JSON.parse(data ?? 'null'));
     }
 
     if (path === '/api/history') {
@@ -649,30 +652,21 @@ export default {
           return { date: d, count: result.stocks.length };
         }),
       );
-      return new Response(JSON.stringify(items.filter(Boolean)), {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-      });
+      return json(items.filter(Boolean));
     }
 
     if (path === '/api/logs') {
       const raw = await env.STOCK_HUNTER.get('logs');
-      return new Response(raw || '[]', {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-      });
+      return json(JSON.parse(raw ?? '[]'));
     }
 
     const historyMatch = path.match(/^\/api\/history\/(\d{8})$/);
     if (historyMatch) {
       const data = await env.STOCK_HUNTER.get(`history:${historyMatch[1]}`);
       if (!data) {
-        return new Response(JSON.stringify({ error: 'not found' }), {
-          status: 404,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        return json({ error: 'not found' }, 404);
       }
-      return new Response(data, {
-        headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' },
-      });
+      return json(JSON.parse(data));
     }
 
     return new Response(renderFrontend(), {
