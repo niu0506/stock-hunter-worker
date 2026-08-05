@@ -90,7 +90,7 @@ export function getShanghaiDateStr(): string {
 
 export function getShanghaiDayOfWeek(): number {
   const { year, month, day } = getShanghaiDateParts();
-  return new Date(`${year}-${month}-${day}T00:00:00+08:00`).getDay();
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day))).getUTCDay();
 }
 
 interface Calendar {
