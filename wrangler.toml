@@ -3,7 +3,7 @@ main = "src/index.ts"
 compatibility_date = "2026-07-01"
 
 [triggers]
-crons = ["30 7 * * 1-5"]
+crons = ["30 7 * * MON-FRI"]
 
 [[kv_namespaces]]
 binding = "STOCK_HUNTER"
